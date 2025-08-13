@@ -1,0 +1,7 @@
+{
+  "model": "final_calibrated_rf.joblib",
+  "threshold": 0.1426084163396559,
+  "metric_pr_auc": 0.2346,
+  "metric_roc_auc": 0.6827,
+  "quick_mode": false
+}

@@ -1,0 +1,5 @@
+# Ignore Python virtual environment
+venv/
+
+# Ignore only the large model artifacts
+notebooks/artifacts/*.joblib
