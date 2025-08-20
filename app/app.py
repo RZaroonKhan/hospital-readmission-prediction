@@ -57,7 +57,7 @@ def coerce_types(df, cat_cols, num_cols):
 
 # UI
 st.title("🏥 30-Day Readmission Risk")
-st.caption("Calibrated ML model from Phase 4 (LogReg/RandomForest via scikit-learn).")
+st.caption("Calibrated ML model (LogReg/RandomForest via scikit-learn).")
 
 # Load model + config
 try:
@@ -127,7 +127,7 @@ st.write("Generate a small CSV with the exact feature columns expected by the mo
 
 with st.expander("Generate sample from cleaned data"):
     # Path to clean dataset (adjust if yours is elsewhere)
-    phase2_path = Path("../data/diabetic_data_clean.csv")
+    phase2_path = Path("data/diabetic_data_clean.csv")
     n_default = 20
 
     if not phase2_path.exists():
@@ -361,7 +361,7 @@ if uploaded:
                        file_name="predictions_with_risk.csv", mime="text/csv")
 
     # Explain a single row with SHAP if model is RandomForest
-    with st.expander("🔍 Explain a single row (SHAP, optional)"):
+    with st.expander("Explain a single row (SHAP, optional)"):
         try:
             from sklearn.ensemble import RandomForestClassifier
             import shap
