@@ -1,24 +1,5 @@
-# Virtual environments
+# Ignore Python virtual environment
 venv/
-.env/
-.venv/
 
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# OS-specific files
-.DS_Store
-
-# Large artifacts (ignore all joblib models by default)
+# Ignore only the large model artifacts
 notebooks/artifacts/*.joblib
-
-# But keep the main trained model
-!notebooks/artifacts/final_calibrated_rf.joblib
-
-# Deployment config (keep this so app knows threshold + model)
-!notebooks/artifacts/deployment_config.json
