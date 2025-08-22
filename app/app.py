@@ -1,3 +1,4 @@
+# app/app.py
 import json
 import io
 from pathlib import Path
@@ -7,97 +8,21 @@ import pandas as pd
 import streamlit as st
 import joblib
 
-# Paths & loading
-ART_DIR = Path("notebooks/artifacts") 
+# =============================
+# Paths & page config
+# =============================
+ART_DIR = Path("notebooks/artifacts")
 CFG_PATH = ART_DIR / "deployment_config.json"
+PHASE2_PATH = Path("data/diabetic_data_clean.csv")
+st.set_page_config(page_title="🏥 Readmission Risk Scorer", layout="wide")
 
-st.set_page_config(page_title="Readmission Risk Scorer", layout="wide")
-
-@st.cache_resource(show_spinner=False)
-def load_config_and_model():
-    if not CFG_PATH.exists():
-        raise FileNotFoundError(f"Config not found at {CFG_PATH}")
-    with open(CFG_PATH, "r") as f:
-        cfg = json.load(f)
-
-    model_path = ART_DIR / cfg["model"]
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model not found at {model_path}")
-
-    model = joblib.load(model_path)
-    threshold = float(cfg.get("threshold", 0.5))
-    return cfg, model, threshold
-
-def get_expected_columns_from_pipeline(pipeline):
-    """Extract the original expected column names (cats/nums) from ColumnTransformer."""
-    try:
-        ct = pipeline.named_steps["prep"]  # ColumnTransformer
-    except Exception:
-        return None, None
-    # Find by transformer name to be robust to ordering
-    name_to_cols = {name: cols for name, trans, cols in ct.transformers_ if name != "remainder"}
-    cat_cols = name_to_cols.get("cat", [])
-    num_cols = name_to_cols.get("num", [])
-    # Ensure list types
-    cat_cols = list(cat_cols) if cat_cols is not None else []
-    num_cols = list(num_cols) if num_cols is not None else []
-    return cat_cols, num_cols
-
-def coerce_types(df, cat_cols, num_cols):
-    dfc = df.copy()
-    # Coerce numeric
-    for c in num_cols:
-        if c in dfc.columns:
-            dfc[c] = pd.to_numeric(dfc[c], errors="coerce")
-    # Coerce categoricals
-    for c in cat_cols:
-        if c in dfc.columns:
-            dfc[c] = dfc[c].astype("object")
-    return dfc
-
-# UI
-st.title("🏥 30-Day Readmission Risk")
-st.caption("Calibrated ML model (LogReg/RandomForest via scikit-learn).")
-
-# Load model + config
-try:
-    cfg, model, saved_thr = load_config_and_model()
-    st.success(f"Loaded model: `{cfg['model']}` | Default threshold: {saved_thr:.3f}")
-except Exception as e:
-    st.error(f"Could not load model/config: {e}")
-    st.stop()
-
-# Grab expected columns
-cat_cols, num_cols = get_expected_columns_from_pipeline(model)
-expected_cols = list(cat_cols) + list(num_cols) if cat_cols or num_cols else None
-
-with st.sidebar:
-    st.header("Settings")
-    thr = st.slider("Decision threshold", 0.0, 1.0, float(saved_thr), 0.005,
-                    help="Predictions ≥ threshold → positive (readmit within 30 days).")
-    st.write("Model:", cfg.get("model", ""))
-    st.write("Saved PR AUC:", cfg.get("metric_pr_auc", ""))
-    st.write("Saved ROC AUC:", cfg.get("metric_roc_auc", ""))
-
-st.subheader("Upload CSV")
-st.write("CSV should include the **same feature columns** used to train the model")
-
-# =========================
-# Required feature columns
-# =========================
-required_cols = [
-    # Demographics
-    "race", "gender", "age",
-    # Encounter / hospital info
-    "admission_type_id", "discharge_disposition_id", "admission_source_id",
-    # Utilization / counts
-    "time_in_hospital", "num_lab_procedures", "num_procedures", "num_medications",
-    "number_outpatient", "number_emergency", "number_inpatient", "number_diagnoses",
-    # Diagnoses (categorical strings from ICD groups)
+# =============================
+# Static schema (fallback)
+# =============================
+CAT_COLS_STATIC = [
+    "race", "gender", "age", "medical_specialty",
     "diag_1", "diag_2", "diag_3",
-    # Labs / diabetes flags
     "A1Cresult", "change", "diabetesMed",
-    # Medication columns (categorical: No/Steady/Up/Down)
     "metformin", "repaglinide", "nateglinide", "chlorpropamide", "glimepiride",
     "acetohexamide", "glipizide", "glyburide", "tolbutamide", "pioglitazone",
     "rosiglitazone", "acarbose", "miglitol", "troglitazone", "tolazamide",
@@ -105,118 +30,274 @@ required_cols = [
     "glipizide-metformin", "glimepiride-pioglitazone", "metformin-rosiglitazone",
     "metformin-pioglitazone"
 ]
+NUM_COLS_STATIC = [
+    "admission_type_id", "discharge_disposition_id", "admission_source_id",
+    "time_in_hospital", "num_lab_procedures", "num_procedures", "num_medications",
+    "number_outpatient", "number_emergency", "number_inpatient", "number_diagnoses"
+]
 
-st.subheader("Required columns")
-st.write("Your CSV must include these **exact** columns:")
-st.code(", ".join(required_cols), language="text")
+# =============================
+# Helpers
+# =============================
+@st.cache_resource(show_spinner=False)
+def load_config_and_model():
+    if not CFG_PATH.exists():
+        raise FileNotFoundError(f"Config not found at {CFG_PATH}")
+    with open(CFG_PATH, "r") as f:
+        cfg = json.load(f)
+    model_path = ART_DIR / cfg["model"]
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model not found at {model_path}")
+    model = joblib.load(model_path)
+    thr = float(cfg.get("threshold", 0.5))
+    return cfg, model, thr
 
-# Offer a downloadable template with headers only
-import io
+def get_expected_columns_from_pipeline(pipeline):
+    """Infer original feature columns from ColumnTransformer inside pipeline, if present."""
+    try:
+        ct = pipeline.named_steps["prep"]
+    except Exception:
+        return None, None
+    name_to_cols = {name: cols for name, trans, cols in ct.transformers_ if name != "remainder"}
+    cat_cols = list(name_to_cols.get("cat", []) or [])
+    num_cols = list(name_to_cols.get("num", []) or [])
+    return cat_cols, num_cols
+
+def coerce_to_schema(df, cats, nums):
+    """Force numeric columns to numeric and cats to object to prevent float<str issues."""
+    dfc = df.copy()
+    for c in nums:
+        if c in dfc.columns:
+            dfc[c] = pd.to_numeric(dfc[c], errors="coerce")
+    for c in cats:
+        if c in dfc.columns:
+            dfc[c] = dfc[c].astype("object")
+    return dfc
+
+def find_non_numeric(df, num_cols):
+    bad = {}
+    for c in num_cols:
+        if c in df.columns:
+            s = pd.to_numeric(df[c], errors="coerce")
+            n_bad = int(s.isna().sum() - df[c].isna().sum())
+            if n_bad > 0:
+                bad[c] = n_bad
+    return bad
+
+# =============================
+# Load model & derive columns
+# =============================
+st.title("🏥 30-Day Readmission Risk")
+st.caption("Calibrated ML model (LogReg/RandomForest)")
+
+try:
+    cfg, model, saved_thr = load_config_and_model()
+    st.success(
+        f"Loaded model: `{cfg['model']}` • Saved threshold: {saved_thr:.3f} • "
+        f"PR AUC: {cfg.get('metric_pr_auc','?')} • ROC AUC: {cfg.get('metric_roc_auc','?')}"
+    )
+except Exception as e:
+    st.error(f"Could not load model/config: {e}")
+    st.stop()
+
+# Try to get the actual expected columns from the pipeline; fallback to static lists
+cat_cols_pipe, num_cols_pipe = get_expected_columns_from_pipeline(model)
+if (cat_cols_pipe or num_cols_pipe):
+    REQUIRED_COLS_DYNAMIC = list(cat_cols_pipe) + list(num_cols_pipe)
+    CATS_IN_USE = list(cat_cols_pipe)
+    NUMS_IN_USE = list(num_cols_pipe)
+else:
+    REQUIRED_COLS_DYNAMIC = CAT_COLS_STATIC + NUM_COLS_STATIC
+    CATS_IN_USE = CAT_COLS_STATIC
+    NUMS_IN_USE = NUM_COLS_STATIC
+
+with st.sidebar:
+    st.header("Settings")
+
+    # Use a slider with a stable session key so we can reset it
+    st.slider(
+        "Decision threshold",
+        min_value=0.0, max_value=1.0, step=0.005,
+        value=float(saved_thr),
+        key="thr_slider",
+        help="Predictions ≥ threshold → positive (30-day readmission).",
+    )
+    # Read the current threshold value
+    thr = float(st.session_state["thr_slider"])
+
+    # Quick actions
+    cols = st.columns(2)
+    with cols[0]:
+        if st.button("Reset to saved"):
+            st.session_state["thr_slider"] = float(saved_thr)
+    with cols[1]:
+        st.caption(f"Saved: **{saved_thr:.3f}**")
+
+    st.divider()
+    st.subheader("What does threshold do?")
+    st.markdown(
+        """
+- The model outputs a **probability** for each patient (0–1).
+- The **threshold** converts that probability into a **Yes/No** decision:
+    - If **prob ≥ threshold** → **READMIT (positive)**
+    - If **prob < threshold** → **NO READMIT (negative)**
+- **Lower threshold (e.g., 0.20)** → *more* patients flagged  
+  → higher **recall** (catch more true cases)  
+  → lower **precision** (more false alarms)
+- **Higher threshold (e.g., 0.70)** → *fewer* patients flagged  
+  → higher **precision** (fewer false alarms)  
+  → lower **recall** (miss more true cases)
+        """
+    )
+
+
+
+# =============================
+# Required columns & template
+# =============================
+st.subheader("Required feature columns")
+st.write("Your CSV must include these **exact** columns (identifiers & targets already removed):")
+st.code(", ".join(REQUIRED_COLS_DYNAMIC), language="text")
+
 template_csv = io.StringIO()
-pd.DataFrame(columns=required_cols).to_csv(template_csv, index=False)
+pd.DataFrame(columns=REQUIRED_COLS_DYNAMIC).to_csv(template_csv, index=False)
 st.download_button("Download empty CSV template (headers only)",
                    data=template_csv.getvalue(),
                    file_name="readmission_features_template.csv",
                    mime="text/csv")
 
-# =========================
-# Generate a sample CSV
-# =========================
-st.subheader("Need a sample CSV?")
-st.write("Generate a small CSV with the exact feature columns expected by the model.")
+# =============================
+# Upload CSV for batch scoring (per-row predictions)
+# =============================
+st.subheader("Upload CSV to score (per-row)")
+uploaded = st.file_uploader("Choose a CSV with the required columns", type=["csv"])
 
-with st.expander("Generate sample from cleaned data"):
-    # Path to clean dataset (adjust if yours is elsewhere)
-    phase2_path = Path("data/diabetic_data_clean.csv")
-    n_default = 20
+if uploaded:
+    try:
+        df_in = pd.read_csv(uploaded)
+    except Exception as e:
+        st.error(f"Failed to read CSV: {e}")
+        st.stop()
 
-    if not phase2_path.exists():
-        st.error(f"Could not find {phase2_path}. Make sure your file is present.")
-    else:
-        n_rows = st.number_input("Number of rows", min_value=5, max_value=1000, value=n_default, step=5,
-                                 help="How many random rows to include in the sample CSV.")
-        seed = st.number_input("Random seed", min_value=0, max_value=10_000, value=42, step=1)
+    st.write("Preview of uploaded data:")
+    st.dataframe(df_in.head(10), use_container_width=True)
 
-        if st.button("Create sample CSV"):
-            try:
-                df_phase2 = pd.read_csv(phase2_path)
+    # Let user optionally pick an ID column to carry through
+    with st.expander("Optional: choose an ID column to keep in the results"):
+        id_col = st.selectbox(
+            "ID column (optional)", 
+            options=["(none)"] + list(df_in.columns),
+            index=0
+        )
+        id_col = None if id_col == "(none)" else id_col
 
-                # Drop identifiers + target to match training features
-                drop_cols = [c for c in ["encounter_id", "patient_nbr", "readmitted", "readmit_30"] if c in df_phase2.columns]
-                X_all = df_phase2.drop(columns=drop_cols)
+    # Validate required columns
+    missing = [c for c in REQUIRED_COLS_DYNAMIC if c not in df_in.columns]
+    if missing:
+        st.error(f"CSV is missing required columns ({len(missing)}). Examples: {missing[:12]}")
+        st.stop()
 
-                # If we can infer expected columns from the fitted pipeline, enforce order/subset
-                if expected_cols:
-                    missing = [c for c in expected_cols if c not in X_all.columns]
-                    if missing:
-                        st.warning(f"The Phase 2 file is missing expected columns (showing first 10): {missing[:10]}")
-                        # proceed with intersection
-                        cols_use = [c for c in expected_cols if c in X_all.columns]
-                    else:
-                        cols_use = expected_cols
-                else:
-                    cols_use = X_all.columns.tolist()
+    # Align order & coerce types strictly
+    df_use = df_in[REQUIRED_COLS_DYNAMIC].copy()
+    badmap = find_non_numeric(df_use, NUMS_IN_USE)
+    if badmap:
+        st.warning(f"Found non-numeric values in numeric columns (coercing to NaN): {badmap}")
+    df_use = coerce_to_schema(df_use, CATS_IN_USE, NUMS_IN_USE)
 
-                # Random sample (or all if small)
-                n_take = min(int(n_rows), len(X_all))
-                sample = X_all.sample(n_take, random_state=int(seed))[cols_use].copy()
+    # --- Predict per-row ---
+    try:
+        proba = model.predict_proba(df_use)[:, 1]              # one probability per row
+        yhat = (proba >= thr).astype(int)                      # 0/1 per row
+    except Exception as e:
+        st.error(f"Prediction failed: {e}")
+        st.stop()
 
-                # Coerce types to match model expectations (optional but helpful)
-                if expected_cols:
-                    sample = coerce_types(sample, cat_cols, num_cols)
+    # Build results table
+    out_cols = []
+    if id_col is not None and id_col in df_in.columns:
+        out_cols.append(id_col)
 
-                # Offer download
-                import io
-                buf = io.StringIO()
-                sample.to_csv(buf, index=False)
-                st.success(f"Sample created with {n_take} rows and {len(cols_use)} columns.")
-                st.download_button(
-                    "⬇️ Download sample_inference.csv",
-                    data=buf.getvalue(),
-                    file_name="sample_inference.csv",
-                    mime="text/csv"
-                )
+    results = pd.DataFrame({
+        **({id_col: df_in[id_col]} if id_col else {}),
+        "readmit_30_proba": proba,
+        f"readmit_30_pred_at_{thr:.3f}": yhat
+    })
 
-                st.write("Preview:")
-                st.dataframe(sample.head(10), use_container_width=True)
+    # Optional: join back any original columns you want to display
+    # Here we show only the selected ID (if any) + predictions.
+    # If you want more context, uncomment next line to include everything:
+    # results = pd.concat([df_in, results[["readmit_30_proba", f"readmit_30_pred_at_{thr:.3f}"]]], axis=1)
 
-            except Exception as e:
-                st.error(f"Failed to create sample: {e}")
+    # Sort by risk descending for convenience
+    results_sorted = results.sort_values("readmit_30_proba", ascending=False).reset_index(drop=True)
 
+    # KPIs
+    pos_rate = float((yhat == 1).mean())
+    st.markdown(
+        f"**Predicted positive rate** at threshold {thr:.3f}: **{pos_rate:.2%}**  "
+        f"• Avg risk: **{results['readmit_30_proba'].mean():.3f}**  "
+        f"• Max risk: **{results['readmit_30_proba'].max():.3f}**"
+    )
 
-# =========================
-# Enter a single patient manually
-# =========================
+    # Nice display: format probability as %
+    display_df = results_sorted.copy()
+    display_df["risk_%"] = (display_df["readmit_30_proba"] * 100).round(1).astype(str) + "%"
+    pred_col = f"readmit_30_pred_at_{thr:.3f}"
+    display_df["prediction"] = np.where(display_df[pred_col] == 1, "READMIT", "NO READMIT")
+
+    show_cols = ([id_col] if id_col else []) + ["risk_%", "prediction"]
+    st.dataframe(display_df[show_cols].head(50), use_container_width=True)
+    st.caption("Showing top 50 by risk. Download below to get all rows.")
+
+    # Download full results (numerical proba retained)
+    buf = io.StringIO()
+    results_sorted.to_csv(buf, index=False)
+    st.download_button(
+        "Download full predictions CSV",
+        data=buf.getvalue(),
+        file_name="predictions_with_risk.csv",
+        mime="text/csv"
+    )
+
+# =============================
+# Single-patient manual form
+# =============================
 with st.expander("Or enter a single patient manually"):
     with st.form("single_patient_form"):
-        # Categorical option sets (based on the UCI diabetes dataset values)
-        age_buckets = ["[0-10)","[10-20)","[20-30)","[30-40)","[40-50)","[50-60)","[60-70)","[70-80)","[80-90)","[90-100)"]
-        yn_med4 = ["No","Steady","Up","Down"]  # for medication columns
+        age_buckets = ["[0-10)","[10-20)","[20-30)","[30-40)","[40-50)","[50-60)",
+                       "[60-70)","[70-80)","[80-90)","[90-100)"]
+        yn_med4 = ["No","Steady","Up","Down"]
         a1c_opts = ["None","Norm",">7",">8"]
         change_opts = ["No","Ch"]
         diabmed_opts = ["No","Yes"]
         race_opts = ["Caucasian","AfricanAmerican","Asian","Hispanic","Other","?"]
-        gender_opts = ["Male","Female","Unknown/Invalid"] 
+        gender_opts = ["Male","Female","Unknown/Invalid"]
 
-        # Layout: two columns for compactness
+        # Simple defaults; you can refine options further if you have domain maps
+        med_spec_opts = ["Unknown","Cardiology","Emergency/Trauma","Family/GeneralPractice",
+                         "InternalMedicine","Surgery-General","Orthopedics","Endocrinology","?"]
+
         c1, c2 = st.columns(2)
 
         with c1:
             race = st.selectbox("race", race_opts, index=0)
             gender = st.selectbox("gender", gender_opts, index=1)
             age = st.selectbox("age", age_buckets, index=7)
-            admission_type_id = st.number_input("admission_type_id", min_value=1, max_value=8, value=1, step=1)
-            discharge_disposition_id = st.number_input("discharge_disposition_id", min_value=1, max_value=30, value=1, step=1)
-            admission_source_id = st.number_input("admission_source_id", min_value=1, max_value=25, value=1, step=1)
-            time_in_hospital = st.number_input("time_in_hospital", min_value=1, max_value=14, value=4, step=1)
-            num_lab_procedures = st.number_input("num_lab_procedures", min_value=0, max_value=150, value=44, step=1)
-            num_procedures = st.number_input("num_procedures", min_value=0, max_value=6, value=0, step=1)
-            num_medications = st.number_input("num_medications", min_value=0, max_value=100, value=16, step=1)
-            number_outpatient = st.number_input("number_outpatient", min_value=0, max_value=20, value=0, step=1)
-            number_emergency = st.number_input("number_emergency", min_value=0, max_value=20, value=0, step=1)
-            number_inpatient = st.number_input("number_inpatient", min_value=0, max_value=20, value=0, step=1)
-            number_diagnoses = st.number_input("number_diagnoses", min_value=1, max_value=16, value=8, step=1)
-            diag_1 = st.text_input("diag_1 (e.g., 250.0 or 428)", value="250.00")
+            medical_specialty = st.selectbox("medical_specialty", med_spec_opts, index=0)
+
+            admission_type_id = st.number_input("admission_type_id", 1, 8, 1, 1)
+            discharge_disposition_id = st.number_input("discharge_disposition_id", 1, 30, 1, 1)
+            admission_source_id = st.number_input("admission_source_id", 1, 25, 1, 1)
+
+            time_in_hospital = st.number_input("time_in_hospital", 1, 14, 4, 1)
+            num_lab_procedures = st.number_input("num_lab_procedures", 0, 150, 44, 1)
+            num_procedures = st.number_input("num_procedures", 0, 6, 0, 1)
+            num_medications = st.number_input("num_medications", 0, 100, 16, 1)
+            number_outpatient = st.number_input("number_outpatient", 0, 20, 0, 1)
+            number_emergency = st.number_input("number_emergency", 0, 20, 0, 1)
+            number_inpatient = st.number_input("number_inpatient", 0, 20, 0, 1)
+            number_diagnoses = st.number_input("number_diagnoses", 1, 16, 8, 1)
+            diag_1 = st.text_input("diag_1 (e.g., 250.00)", value="250.00")
             diag_2 = st.text_input("diag_2", value="401.9")
             diag_3 = st.text_input("diag_3", value="414")
 
@@ -225,36 +306,22 @@ with st.expander("Or enter a single patient manually"):
             change = st.selectbox("change", change_opts, index=0)
             diabetesMed = st.selectbox("diabetesMed", diabmed_opts, index=1)
 
-            # Med flags (No/Steady/Up/Down)
-            metformin = st.selectbox("metformin", yn_med4, index=0)
-            repaglinide = st.selectbox("repaglinide", yn_med4, index=0)
-            nateglinide = st.selectbox("nateglinide", yn_med4, index=0)
-            chlorpropamide = st.selectbox("chlorpropamide", yn_med4, index=0)
-            glimepiride = st.selectbox("glimepiride", yn_med4, index=0)
-            acetohexamide = st.selectbox("acetohexamide", yn_med4, index=0)
-            glipizide = st.selectbox("glipizide", yn_med4, index=0)
-            glyburide = st.selectbox("glyburide", yn_med4, index=0)
-            tolbutamide = st.selectbox("tolbutamide", yn_med4, index=0)
-            pioglitazone = st.selectbox("pioglitazone", yn_med4, index=0)
-            rosiglitazone = st.selectbox("rosiglitazone", yn_med4, index=0)
-            acarbose = st.selectbox("acarbose", yn_med4, index=0)
-            miglitol = st.selectbox("miglitol", yn_med4, index=0)
-            troglitazone = st.selectbox("troglitazone", yn_med4, index=0)
-            tolazamide = st.selectbox("tolazamide", yn_med4, index=0)
-            examide = st.selectbox("examide", yn_med4, index=0)
-            citoglipton = st.selectbox("citoglipton", yn_med4, index=0)
-            insulin = st.selectbox("insulin", yn_med4, index=0)
-            glyburide_metformin = st.selectbox("glyburide-metformin", yn_med4, index=0)
-            glipizide_metformin = st.selectbox("glipizide-metformin", yn_med4, index=0)
-            glimepiride_pioglitazone = st.selectbox("glimepiride-pioglitazone", yn_med4, index=0)
-            metformin_rosiglitazone = st.selectbox("metformin-rosiglitazone", yn_med4, index=0)
-            metformin_pioglitazone = st.selectbox("metformin-pioglitazone", yn_med4, index=0)
+            def med(name): return st.selectbox(name, yn_med4, index=0)
+            metformin = med("metformin"); repaglinide = med("repaglinide"); nateglinide = med("nateglinide")
+            chlorpropamide = med("chlorpropamide"); glimepiride = med("glimepiride"); acetohexamide = med("acetohexamide")
+            glipizide = med("glipizide"); glyburide = med("glyburide"); tolbutamide = med("tolbutamide")
+            pioglitazone = med("pioglitazone"); rosiglitazone = med("rosiglitazone"); acarbose = med("acarbose")
+            miglitol = med("miglitol"); troglitazone = med("troglitazone"); tolazamide = med("tolazamide")
+            examide = med("examide"); citoglipton = med("citoglipton"); insulin = med("insulin")
+            glyburide_metformin = med("glyburide-metformin"); glipizide_metformin = med("glipizide-metformin")
+            glimepiride_pioglitazone = med("glimepiride-pioglitazone")
+            metformin_rosiglitazone = med("metformin-rosiglitazone")
+            metformin_pioglitazone = med("metformin-pioglitazone")
 
         submitted = st.form_submit_button("Predict for this patient")
         if submitted:
             row = {
-                # left column
-                "race": race, "gender": gender, "age": age,
+                "race": race, "gender": gender, "age": age, "medical_specialty": medical_specialty,
                 "admission_type_id": int(admission_type_id),
                 "discharge_disposition_id": int(discharge_disposition_id),
                 "admission_source_id": int(admission_source_id),
@@ -267,7 +334,6 @@ with st.expander("Or enter a single patient manually"):
                 "number_inpatient": int(number_inpatient),
                 "number_diagnoses": int(number_diagnoses),
                 "diag_1": diag_1, "diag_2": diag_2, "diag_3": diag_3,
-                # right column
                 "A1Cresult": A1Cresult, "change": change, "diabetesMed": diabetesMed,
                 "metformin": metformin, "repaglinide": repaglinide, "nateglinide": nateglinide,
                 "chlorpropamide": chlorpropamide, "glimepiride": glimepiride, "acetohexamide": acetohexamide,
@@ -282,18 +348,10 @@ with st.expander("Or enter a single patient manually"):
                 "metformin-pioglitazone": metformin_pioglitazone
             }
 
-            # Align to expected training columns if we could infer them
-            if expected_cols:
-                missing = [c for c in expected_cols if c not in row]
-                if missing:
-                    st.error(f"Internal error: form missing columns: {missing[:10]}")
-                    st.stop()
-                X_one = pd.DataFrame([row])[expected_cols]
-                X_one = coerce_types(X_one, cat_cols, num_cols)
-            else:
-                X_one = pd.DataFrame([row])
+            X_one = pd.DataFrame([row])
+            X_one = X_one[[c for c in REQUIRED_COLS_DYNAMIC if c in X_one.columns]]
+            X_one = coerce_to_schema(X_one, CATS_IN_USE, NUMS_IN_USE)
 
-            # Predict with current threshold slider (thr)
             try:
                 p = float(model.predict_proba(X_one)[:, 1][0])
             except Exception as e:
@@ -301,90 +359,77 @@ with st.expander("Or enter a single patient manually"):
                 st.stop()
 
             yhat = int(p >= thr)
-            st.success(f"Predicted probability of 30-day readmission: **{p:.3f}** "
-                       f"→ decision at threshold {thr:.3f}: **{yhat}** "
-                       f"({'READMIT' if yhat==1 else 'NO READMIT'})")
+            st.success(
+                f"Predicted probability of 30-day readmission: **{p:.3f}**  "
+                f"→ decision at threshold {thr:.3f}: **{yhat}** "
+                f"({'READMIT' if yhat==1 else 'NO READMIT'})"
+            )
 
-
-uploaded = st.file_uploader("Choose a CSV file", type=["csv"])
-
-if uploaded:
-    try:
-        df_in = pd.read_csv(uploaded)
-    except Exception as e:
-        st.error(f"Failed to read CSV: {e}")
-        st.stop()
-
-    st.write("Preview:")
-    st.dataframe(df_in.head(10), use_container_width=True)
-
-    # If we can infer expected columns from the pipeline, validate & align
-    if expected_cols:
-        missing = [c for c in expected_cols if c not in df_in.columns]
-        extra = [c for c in df_in.columns if c not in expected_cols]
-        if missing:
-            st.error(f"Your CSV is missing required columns ({len(missing)}). "
-                     f"Examples: {missing[:10]}")
-            st.stop()
-        # Keep only expected columns, order them
-        df_use = df_in[expected_cols].copy()
-        df_use = coerce_types(df_use, cat_cols, num_cols)
-        if extra:
-            st.info(f"Ignoring {len(extra)} extra column(s) not used by the model.")
+# =============================
+# Generate a sample CSV
+# =============================
+st.subheader("Need a sample CSV?")
+with st.expander("Generate sample cleaned data"):
+    if not PHASE2_PATH.exists():
+        st.error(f"Could not find {PHASE2_PATH}. Place your file there.")
     else:
-        # Fallback: try as-is (pipeline may handle columns internally)
-        st.warning("Could not infer expected columns from pipeline; proceeding with your CSV as-is.")
-        df_use = df_in.copy()
+        n_rows = st.number_input("Number of rows", 5, 1000, 20, 5)
+        seed = st.number_input("Random seed", 0, 10_000, 42, 1)
+        if st.button("Create sample CSV"):
+            try:
+                df_phase2 = pd.read_csv(PHASE2_PATH)
+                drop_cols = [c for c in ["encounter_id","patient_nbr","readmitted","readmit_30"] if c in df_phase2.columns]
+                X_all = df_phase2.drop(columns=drop_cols)
 
-    # Predict calibrated probabilities
+                cols_final = [c for c in REQUIRED_COLS_DYNAMIC if c in X_all.columns]
+                sample = X_all.sample(min(int(n_rows), len(X_all)), random_state=int(seed))[cols_final].copy()
+                sample = coerce_to_schema(sample, CATS_IN_USE, NUMS_IN_USE)
+
+                buf = io.StringIO()
+                sample.to_csv(buf, index=False)
+                st.success(f"Sample created with {len(sample)} rows and {len(cols_final)} columns.")
+                st.download_button("⬇️ Download sample_inference.csv",
+                                   data=buf.getvalue(),
+                                   file_name="sample_inference.csv",
+                                   mime="text/csv")
+                st.write("Preview:")
+                st.dataframe(sample.head(10), use_container_width=True)
+            except Exception as e:
+                st.error(f"Failed to create sample: {e}")
+
+# =============================
+# Optional: SHAP explanation (RandomForest)
+# =============================
+with st.expander("🔍 Explain a single row (SHAP, optional)"):
     try:
-        proba = model.predict_proba(df_use)[:, 1]
-    except Exception as e:
-        st.error(f"Prediction failed: {e}")
-        st.stop()
-
-    yhat = (proba >= thr).astype(int)
-    out = df_in.copy()
-    out["readmit_30_proba"] = proba
-    out[f"readmit_30_pred_at_{thr:.3f}"] = yhat
-
-    # Summary
-    pos_rate = float((yhat == 1).mean())
-    st.subheader("Results")
-    st.write(f"Predicted **positive rate** at threshold {thr:.3f}: **{pos_rate:.3%}**")
-    st.dataframe(out.head(20), use_container_width=True)
-
-    # Download
-    csv_buf = io.StringIO()
-    out.to_csv(csv_buf, index=False)
-    st.download_button("⬇️ Download predictions as CSV", data=csv_buf.getvalue(),
-                       file_name="predictions_with_risk.csv", mime="text/csv")
-
-    # Explain a single row with SHAP if model is RandomForest
-    with st.expander("Explain a single row (SHAP, optional)"):
-        try:
-            from sklearn.ensemble import RandomForestClassifier
-            import shap
-            # Try to extract underlying RF from pipeline
-            clf = model.named_steps.get("clf", None)
-            is_rf = isinstance(clf, RandomForestClassifier)
-            if not is_rf:
-                st.info("SHAP demo is available for RandomForest models.")
+        from sklearn.ensemble import RandomForestClassifier
+        import shap
+        clf = model.named_steps.get("clf", None)
+        if not isinstance(clf, RandomForestClassifier):
+            st.info("SHAP demo available for RandomForest models only.")
+        else:
+            # Use the first row from last uploaded df_use if available; else from Phase 2
+            if 'df_use' in locals() and len(df_use) > 0:
+                explain_row = df_use.iloc[[0]]
+            elif PHASE2_PATH.exists():
+                base = pd.read_csv(PHASE2_PATH)
+                drop_cols = [c for c in ["encounter_id","patient_nbr","readmitted","readmit_30"] if c in base.columns]
+                base = base.drop(columns=drop_cols)
+                base = base[[c for c in REQUIRED_COLS_DYNAMIC if c in base.columns]].head(1)
+                explain_row = coerce_to_schema(base, CATS_IN_USE, NUMS_IN_USE)
             else:
-                idx = st.number_input("Row index to explain", min_value=0, max_value=len(df_use)-1, value=0, step=1)
-                explain_row = df_use.iloc[[idx]]
-                # Transform through preprocessor to tree input space
+                st.info("Upload a CSV or place the Phase 2 file to enable SHAP demo.")
+                explain_row = None
+
+            if explain_row is not None:
                 ct = model.named_steps["prep"]
                 X_tr = ct.transform(explain_row)
                 explainer = shap.TreeExplainer(clf)
                 X_arr = X_tr.toarray() if hasattr(X_tr, "toarray") else X_tr
                 shap_vals = explainer.shap_values(X_arr)
-                st.write("Top positive contributors (approximate, model input space):")
-                # We won't reconstruct feature names here (OneHot expands a lot); show a force plot image
-                shap_fig = shap.force_plot(explainer.expected_value[1], shap_vals[1][0], X_arr[0], matplotlib=True)
+                st.write("Approximate local explanation (model input space):")
                 import matplotlib.pyplot as plt
+                shap.force_plot(explainer.expected_value[1], shap_vals[1][0], X_arr[0], matplotlib=True)
                 st.pyplot(plt.gcf(), clear_figure=True)
-        except Exception as e:
-            st.warning(f"SHAP explanation skipped: {e}")
-else:
-    st.info("Upload a CSV to score readmission risk.")
+    except Exception as e:
+        st.warning(f"SHAP explanation skipped: {e}")
