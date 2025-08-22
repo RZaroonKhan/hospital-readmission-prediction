@@ -1,0 +1,18 @@
+# Core
+numpy==1.26.4          # stable ABI; avoids NumPy 2.x binary breakages
+pandas==2.2.2
+scikit-learn==1.4.2
+scipy==1.11.4
+joblib==1.3.2
+threadpoolctl==3.3.0
+
+# App
+streamlit==1.36.0
+pyarrow==16.1.0        # works with pandas 2.2.x + numpy 1.26.x
+
+# Viz / Explainability
+matplotlib==3.8.4
+shap==0.45.1           # optional; SHAP expander handles absence gracefully
+
+# Nice-to-haves for notebooks
+tqdm==4.66.4
