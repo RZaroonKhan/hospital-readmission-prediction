@@ -21,7 +21,7 @@ It is designed as an **end-to-end data science & machine learning pipeline** —
 ## Installation
 
 1. Clone the repository using:
-git clone https://github.com/your-username/hospital-readmission-prediction.git
+git clone https://github.com/RZaroonKhan/hospital-readmission-prediction.git
 cd hospital-readmission-prediction
 
 2. Create and activate virtual environment:
