@@ -25,7 +25,7 @@ git clone https://github.com/RZaroonKhan/hospital-readmission-prediction.git
 cd hospital-readmission-prediction
 
 2. Create and activate virtual environment:
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate  (on Mac/Linux)
 .venv\Scripts\activate     (on Windows)
 
