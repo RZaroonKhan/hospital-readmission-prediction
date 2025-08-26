@@ -15,7 +15,7 @@ It is designed as an **end-to-end data science & machine learning pipeline** —
 - Hyperparameter tuning with cross-validation.
 - Probability calibration for better decision thresholds.
 - **Streamlit Web App** for user-friendly predictions.
-- Deployment-ready structure (Docker + Makefile included).
+- Deployment-ready structure (Makefile included).
 - Modular & reproducible code.
 
 ## Usage
