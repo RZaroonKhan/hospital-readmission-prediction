@@ -18,20 +18,6 @@ It is designed as an **end-to-end data science & machine learning pipeline** —
 - Deployment-ready structure (Docker + Makefile included).
 - Modular & reproducible code.
 
-## Installation
-
-1. Clone the repository using:
-git clone https://github.com/RZaroonKhan/hospital-readmission-prediction.git
-cd hospital-readmission-prediction
-
-2. Create and activate virtual environment:
-python3.11 -m venv .venv
-source .venv/bin/activate  (on Mac/Linux)
-.venv\Scripts\activate     (on Windows)
-
-3. Install dependencies:
-pip install -r requirements.txt
-
 ## Usage
 ### Creating the app
 Run the Streamlit app using
